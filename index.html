@@ -22,6 +22,11 @@
   header { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:14px; }
   .title { font-size:15px; letter-spacing:.14em; font-weight:700; color:var(--ink); }
   .title small { display:block; font-size:10px; letter-spacing:.22em; color:var(--muted); font-weight:600; margin-top:2px; }
+  .keyrow { display:block; margin-top:6px; }
+  #keyBtn { border:1px solid var(--line); background:var(--panel); color:var(--muted); font-family:var(--font);
+    font-size:11px; font-weight:700; padding:3px 8px; border-radius:2px; cursor:pointer; letter-spacing:.02em; }
+  #keyBtn:active { transform:translateY(1px); }
+  #keyBtn:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
   .badge { display:flex; align-items:baseline; gap:8px; }
   .badge .no { font-family:var(--mono); font-size:22px; font-weight:700; }
   .badge .bd { font-size:12px; font-weight:700; color:#fff; background:var(--accent);
@@ -100,7 +105,9 @@
 <body>
   <div class="wrap">
     <header>
-      <div class="title">数独<small>SOLVE &amp; ASCEND</small></div>
+      <div class="title">数独<small>SOLVE &amp; ASCEND</small>
+        <span class="keyrow"><button id="keyBtn" title="合い言葉を変更"><span id="keyLabel">🔑 未設定</span></button></span>
+      </div>
       <div class="badge"><span class="no" id="puzzleNo">#1</span><span class="bd" id="band">入門</span></div>
     </header>
 

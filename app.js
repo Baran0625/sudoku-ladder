@@ -1,17 +1,34 @@
 /* =========================================================================
- * app.js — 数独アプリのUI/進行ロジック（A版: localStorage保存）
+ * app.js — 数独アプリのUI/進行ロジック（B版: localStorage + Sheets同期）
  *  依存: sudoku.js（window.Sudoku）
  *
  *  保存するもの（盤面は保存しない。番号からseed再生成）:
  *   sudoku:clearedUpTo        … クリア済みの最大番号（次の未クリア＝+1）
  *   sudoku:records            … { [番号]: {cleared, bestMs, bestMistakes, bestHints, plays} }
+ *   sudoku:userKey            … 合い言葉（端末間で進捗を共有するキー）
+ *
+ *  同期方針:
+ *   - 起動時: doGet で取得 → ローカルとマージ（進んでる方・良い方を採用）
+ *     → ローカル保存＋リモートへも書き戻し
+ *   - クリア時: ローカル保存に加え doPost 送信（失敗してもゲームは止めない）
+ *   - オフラインでも通常プレイ可。同期は「できたら反映」。
  * ======================================================================= */
 (function () {
   "use strict";
   const S = window.Sudoku;
+
+  /* ---- 同期設定 ------------------------------------------------------- */
+  const API_URL = "https://script.google.com/macros/s/AKfycbyx5rzJkTJ2NYC6I95zp5nVoS7AS8RQkTD4tbfS9_pl8z1MKX5CjH8mck-JLSZ1od_b/exec";
+
   const LS_CLEARED = "sudoku:clearedUpTo";
   const LS_RECORDS = "sudoku:records";
-  const SCHEMA = "A1"; // 保存形式のバージョン（将来のB移行の目印）
+  const LS_USERKEY = "sudoku:userKey";
+  const SCHEMA = "B1";
+
+  /* ---- 合い言葉（ユーザーキー）--------------------------------------- */
+  function getUserKey() { return localStorage.getItem(LS_USERKEY) || ""; }
+  function setUserKey(k) { localStorage.setItem(LS_USERKEY, k); }
+  function isValidKey(k) { return /^[A-Za-z0-9-]{1,40}$/.test(k || ""); }
 
   /* ---- 保存の読み書き（壊れていても落ちない） -------------------------- */
   function loadRecords() {
@@ -24,6 +41,61 @@
     return Number.isFinite(n) && n >= 0 ? n : 0;
   }
   function setClearedUpTo(n) { localStorage.setItem(LS_CLEARED, String(n)); }
+
+  /* ---- マージ（Nodeで検証済み: 進捗は最大, 記録はベストを採用）-------- */
+  function mergeRecords(a, b) {
+    const out = {}, keys = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
+    for (const k of keys) {
+      const x = (a || {})[k], y = (b || {})[k];
+      if (!x) { out[k] = y; continue; }
+      if (!y) { out[k] = x; continue; }
+      out[k] = {
+        cleared: !!(x.cleared || y.cleared),
+        bestMs: Math.min(x.bestMs ?? Infinity, y.bestMs ?? Infinity),
+        bestMistakes: Math.min(x.bestMistakes ?? Infinity, y.bestMistakes ?? Infinity),
+        bestHints: Math.min(x.bestHints ?? Infinity, y.bestHints ?? Infinity),
+        plays: Math.max(x.plays || 0, y.plays || 0),
+      };
+    }
+    return out;
+  }
+
+  /* ---- リモート通信（失敗しても throw しない）----------------------- */
+  async function remoteLoad(key) {
+    if (!API_URL || !isValidKey(key)) return null;
+    try {
+      const res = await fetch(`${API_URL}?u=${encodeURIComponent(key)}`, { method: "GET" });
+      const data = await res.json();
+      return data && data.ok ? data : null;
+    } catch { return null; }
+  }
+  async function remotePush(key) {
+    if (!API_URL || !isValidKey(key)) return false;
+    const payload = { u: key, clearedUpTo: clearedUpTo(), records: loadRecords() };
+    try {
+      // CORSプリフライト回避のため text/plain で送る（GAS側でJSONパース）
+      const res = await fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      return !!(data && data.ok);
+    } catch { return false; }
+  }
+
+  /* ---- 起動時同期: リモート取得 → マージ → ローカル保存 → 書き戻し ---- */
+  async function syncOnStart(key) {
+    const remote = await remoteLoad(key);
+    if (remote) {
+      const mergedCleared = Math.max(clearedUpTo(), remote.clearedUpTo | 0);
+      const mergedRecords = mergeRecords(loadRecords(), remote.records || {});
+      setClearedUpTo(mergedCleared);
+      saveRecords(mergedRecords);
+    }
+    // ローカル(またはマージ結果)をリモートへ書き戻し（ローカルだけ進んでいた分を反映）
+    await remotePush(key);
+  }
 
   /* ---- 状態 ----------------------------------------------------------- */
   let cur = null; // { number, puzzle, solution, given[], grid[], notes[], mistakes, hints, startMs, timerId, solved }
@@ -216,6 +288,9 @@
     };
     saveRecords(recs);
     if (number > clearedUpTo()) setClearedUpTo(number); // 連番アンロック
+    // リモート保存（失敗してもローカルには残るのでゲームは止めない）
+    const uKey = getUserKey();
+    if (uKey) remotePush(uKey).then(ok => { if (!ok) toast("同期に失敗（進捗はこの端末に保存済み）"); });
   }
 
   /* ---- 進捗グリッド（クリア済み＝再挑戦可 / 次の1問＝解放）------------- */
@@ -285,16 +360,64 @@
     noteBtn.classList.toggle("on", noteMode);
   }
 
+  /* ---- 合い言葉のUI（ヘッダー表示＋入力/変更）------------------------ */
+  function refreshKeyUI() {
+    const el = $("#keyLabel");
+    if (!el) return;
+    const k = getUserKey();
+    el.textContent = k ? `🔑 ${k}` : "🔑 未設定";
+  }
+  function promptKey(initial) {
+    const cur = getUserKey();
+    const msg = initial
+      ? "端末間で進捗を共有する合い言葉を入力してください。\n（別の端末でも同じ合い言葉を入れると進捗が引き継がれます）\n英数字とハイフン, 1〜40文字。"
+      : "合い言葉を変更します。新しい合い言葉を入力してください。";
+    const input = window.prompt(msg, cur);
+    if (input === null) return false;       // キャンセル
+    const k = input.trim();
+    if (!isValidKey(k)) { toast("英数字とハイフンのみ・1〜40文字で入力してください"); return false; }
+    setUserKey(k);
+    refreshKeyUI();
+    return true;
+  }
+  async function changeKeyFlow() {
+    if (!promptKey(false)) return;
+    toast("合い言葉を変更しました。進捗を同期します…");
+    await syncOnStart(getUserKey());
+    setClearedUpTo(clearedUpTo());
+    renderProgress();
+    openPuzzle(clearedUpTo() + 1);
+  }
+
   /* ---- 起動 ------------------------------------------------------------ */
-  function init() {
+  async function init() {
     noteBtn.addEventListener("click", toggleNote);
     $("#hintBtn").addEventListener("click", giveHint);
     $("#restartBtn").addEventListener("click", () => { if (cur) openPuzzle(cur.number); });
+    const keyBtn = $("#keyBtn");
+    if (keyBtn) keyBtn.addEventListener("click", changeKeyFlow);
     document.addEventListener("keydown", onKey);
+
+    // 合い言葉が未設定なら初回入力を促す（未設定でもオフラインでは遊べる）
+    if (!getUserKey()) promptKey(true);
+    refreshKeyUI();
+
+    // まず今の進捗で描画（オフラインでも即プレイ可）
     renderProgress();
-    openPuzzle(clearedUpTo() + 1); // 次の未クリアを開く
+    openPuzzle(clearedUpTo() + 1);
+
+    // 合い言葉があれば裏で同期し、済んだら反映
+    const key = getUserKey();
+    if (key) {
+      await syncOnStart(key);
+      renderProgress();
+      // 同期で解放数が増えていたら、次の未クリアへ開き直す（未着手時のみ）
+      if (cur && !cur.solved && cur.grid.every((v, i) => v === cur.puzzle[i])) {
+        openPuzzle(clearedUpTo() + 1);
+      }
+    }
   }
 
   document.addEventListener("DOMContentLoaded", init);
-  window.__sudokuApp = { openPuzzle, loadRecords, clearedUpTo }; // デバッグ用
+  window.__sudokuApp = { openPuzzle, loadRecords, clearedUpTo, syncOnStart, getUserKey }; // デバッグ用
 })();
