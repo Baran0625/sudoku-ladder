@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>数独 — 解くほど手強く</title>
+<style>
+  :root {
+    --paper:#EDF0F2; --panel:#F6F8F9; --ink:#16233D; --line:#C7CFD6;
+    --box:#16233D; --accent:#1F7A6E; --accent-weak:#D6ECE7;
+    --given:#16233D; --entry:#1F7A6E; --error:#C0392B; --error-weak:#F6DEDA;
+    --related:#E3E9ED; --same:#DCE9E6; --muted:#6B7787;
+    --font:"Hiragino Kaku Gothic ProN","Yu Gothic",system-ui,-apple-system,sans-serif;
+    --mono:"SF Mono",ui-monospace,"Menlo",monospace;
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; background:var(--paper); color:var(--ink); font-family:var(--font); }
+  body { display:flex; flex-direction:column; align-items:center; padding:16px 12px 48px; }
+  .wrap { width:100%; max-width:460px; }
+
+  /* header */
+  header { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:14px; }
+  .title { font-size:15px; letter-spacing:.14em; font-weight:700; color:var(--ink); }
+  .title small { display:block; font-size:10px; letter-spacing:.22em; color:var(--muted); font-weight:600; margin-top:2px; }
+  .badge { display:flex; align-items:baseline; gap:8px; }
+  .badge .no { font-family:var(--mono); font-size:22px; font-weight:700; }
+  .badge .bd { font-size:12px; font-weight:700; color:#fff; background:var(--accent);
+    padding:3px 9px; border-radius:2px; letter-spacing:.08em; }
+
+  /* stat bar */
+  .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:1px; background:var(--line);
+    border:1px solid var(--line); margin-bottom:12px; }
+  .stat { background:var(--panel); padding:8px 6px; text-align:center; }
+  .stat .k { font-size:10px; letter-spacing:.14em; color:var(--muted); font-weight:700; }
+  .stat .v { font-family:var(--mono); font-size:19px; font-weight:700; margin-top:2px; }
+
+  /* board */
+  #board { display:grid; grid-template-columns:repeat(9,1fr); aspect-ratio:1/1;
+    border:2.5px solid var(--box); background:var(--line); gap:1px; user-select:none; }
+  .cell { position:relative; background:var(--panel); border:0; padding:0; cursor:pointer;
+    font-family:var(--mono); font-size:clamp(18px,6.4vw,26px); font-weight:600; color:var(--entry);
+    display:flex; align-items:center; justify-content:center; transition:background .08s; }
+  .cell.br { box-shadow:1.5px 0 0 var(--box); }
+  .cell.bb { box-shadow:0 1.5px 0 var(--box); }
+  .cell.br.bb { box-shadow:1.5px 0 0 var(--box), 0 1.5px 0 var(--box); }
+  .cell.given { color:var(--given); font-weight:800; }
+  .cell.related { background:var(--related); }
+  .cell.same { background:var(--same); }
+  .cell.selected { background:var(--accent-weak); box-shadow:inset 0 0 0 2px var(--accent); }
+  .cell.conflict { color:var(--error); background:var(--error-weak); }
+  .cell:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+  .notes { position:absolute; inset:2px; display:grid; grid-template-columns:repeat(3,1fr);
+    grid-template-rows:repeat(3,1fr); pointer-events:none; }
+  .notes span { font-size:9px; line-height:1; font-weight:600; color:var(--muted);
+    display:flex; align-items:center; justify-content:center; }
+
+  /* controls */
+  .tools { display:flex; gap:8px; margin:12px 0; }
+  .tool { flex:1; padding:10px; border:1px solid var(--line); background:var(--panel); color:var(--ink);
+    font-family:var(--font); font-size:13px; font-weight:700; letter-spacing:.04em; cursor:pointer; border-radius:2px; }
+  .tool:active { transform:translateY(1px); }
+  .tool.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .tool:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+  #pad { display:grid; grid-template-columns:repeat(5,1fr); gap:6px; }
+  .key { padding:14px 0; border:1px solid var(--line); background:var(--panel); color:var(--ink);
+    font-family:var(--mono); font-size:22px; font-weight:700; cursor:pointer; border-radius:2px; }
+  .key:active { transform:translateY(1px); background:var(--accent-weak); }
+  .key.erase { grid-column:span 5; font-family:var(--font); font-size:14px; letter-spacing:.1em; }
+  .key:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+  /* progress */
+  .phdr { display:flex; align-items:baseline; justify-content:space-between; margin:26px 0 10px; }
+  .phdr h2 { font-size:12px; letter-spacing:.16em; font-weight:700; margin:0; }
+  .phdr span { font-size:11px; color:var(--muted); }
+  #progress { display:grid; grid-template-columns:repeat(auto-fill,minmax(72px,1fr)); gap:6px; }
+  .ptile { border:1px solid var(--line); background:var(--panel); padding:8px 4px; border-radius:2px;
+    cursor:pointer; display:flex; flex-direction:column; align-items:center; gap:2px; min-height:62px; justify-content:center; }
+  .ptile .pn { font-family:var(--mono); font-size:14px; font-weight:700; }
+  .ptile .pb { font-size:10px; color:var(--muted); font-weight:700; }
+  .ptile .pt { font-family:var(--mono); font-size:11px; color:var(--accent); font-weight:700; }
+  .ptile.cleared { border-color:var(--accent-weak); }
+  .ptile.cleared .pn { color:var(--accent); }
+  .ptile.current { border:1.5px solid var(--accent); background:var(--accent-weak); }
+  .ptile.current .pt { color:var(--ink); }
+  .ptile.locked { opacity:.5; cursor:default; }
+  .ptile.locked .pb { font-size:12px; }
+  .ptile:not(.locked):active { transform:translateY(1px); }
+  .ptile:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+  /* toast */
+  #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%) translateY(20px);
+    background:var(--ink); color:#fff; padding:11px 18px; border-radius:3px; font-size:13px; font-weight:600;
+    opacity:0; pointer-events:none; transition:opacity .2s, transform .2s; max-width:90vw; text-align:center; z-index:20; }
+  #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="title">数独<small>SOLVE &amp; ASCEND</small></div>
+      <div class="badge"><span class="no" id="puzzleNo">#1</span><span class="bd" id="band">入門</span></div>
+    </header>
+
+    <div class="stats">
+      <div class="stat"><div class="k">TIME</div><div class="v" id="timer">00:00</div></div>
+      <div class="stat"><div class="k">MISS</div><div class="v" id="mistakes">0</div></div>
+      <div class="stat"><div class="k">HINT</div><div class="v" id="hints">0</div></div>
+    </div>
+
+    <div id="board"></div>
+
+    <div class="tools">
+      <button class="tool" id="noteBtn">メモ (N)</button>
+      <button class="tool" id="hintBtn">ヒント</button>
+      <button class="tool" id="restartBtn">やり直す</button>
+    </div>
+
+    <div id="pad"></div>
+
+    <div class="phdr">
+      <h2>これまでの問題</h2><span>タップで再挑戦</span>
+    </div>
+    <div id="progress"></div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script src="sudoku.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
